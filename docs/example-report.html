@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok Data Exposure Report — 2026-07-13 13:01</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+
+    /* Header */
+    .report-header {
+      text-align: center;
+      padding: 30px 20px;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 30px;
+    }
+    .report-header h1 { font-size: 1.5rem; color: #1a1a1a; font-weight: 700; letter-spacing: 1px; }
+    .report-header .subtitle { color: #555; font-size: 0.85rem; margin-top: 5px; }
+
+    /* Traffic Light */
+    .traffic-light {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 40px 30px;
+      text-align: center;
+      margin-bottom: 30px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .light-circle {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: #ef4444;
+      margin: 0 auto 20px;
+      box-shadow: 0 0 30px #ef4444, inset 0 -4px 12px rgba(0,0,0,0.15);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
+    .light-label { font-size: 1.8rem; font-weight: 800; color: #f87171; letter-spacing: 2px; }
+    .light-desc { font-size: 1rem; color: #444; margin-top: 10px; }
+
+    /* Sections */
+    .section {
+      margin-bottom: 30px;
+    }
+    .section-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #555;
+      border-bottom: 2px solid #d0d0d0;
+      padding-bottom: 10px;
+      margin-bottom: 15px;
+      font-weight: 700;
+    }
+
+    /* System info */
+    .sys-info {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px 20px;
+      font-size: 0.85rem;
+      color: #333;
+    }
+    .sys-info span:nth-child(odd) { color: #555; font-weight: 600; }
+
+    /* Cards */
+    .card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #fafafa;
+    }
+    .upload-num { font-weight: 700; color: #333; font-size: 0.85rem; }
+    .timestamp { color: #555; font-size: 0.8rem; font-family: 'SF Mono', Monaco, monospace; }
+    .card-body { padding: 12px 16px; }
+
+    /* Detail rows */
+    .detail-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 3px 0;
+      font-size: 0.85rem;
+    }
+    .detail-row .label { color: #555; min-width: 100px; text-align: right; font-weight: 600; }
+    .detail-row .value { color: #1a1a1a; }
+    .detail-row .value.mono, .mono { font-family: 'SF Mono', Monaco, 'Courier New', monospace; }
+    .detail-row .value.path { color: #7c3aed; word-break: break-all; }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-left: auto;
+    }
+    .badge-red { background: #ef4444; color: #fff; }
+    .badge-yellow { background: #f59e0b; color: #fff; }
+    .badge-green { background: #10b981; color: #fff; }
+
+    /* Path scope */
+    .scope-critical { color: #dc2626; font-weight: 700; }
+    .scope-elevated { color: #d97706; }
+    .scope-normal { color: #059669; }
+
+    /* Value modifiers */
+    .bad { color: #dc2626; }
+    .good { color: #059669; }
+    .muted { color: #666; font-size: 0.8rem; }
+
+    /* Sensitive files */
+    .sev-legend { margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .sev-pill {
+      display: inline-block;
+      padding: 3px 12px;
+      border-radius: 12px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .sensitive-item {
+      display: flex;
+      align-items: stretch;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .sensitive-marker { width: 4px; flex-shrink: 0; }
+    .sensitive-content { padding: 10px 14px; flex: 1; }
+    .sensitive-desc { font-size: 0.85rem; color: #1a1a1a; }
+    .sensitive-path { font-size: 0.75rem; color: #555; margin-top: 3px; word-break: break-all; }
+    .sev-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #fff;
+      margin-left: 6px;
+    }
+    .file-exists {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.65rem;
+      background: #fee2e2;
+      color: #dc2626;
+      margin-left: 6px;
+      font-weight: 600;
+    }
+    .file-gone {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.65rem;
+      background: #f3f4f6;
+      color: #666;
+      margin-left: 6px;
+    }
+
+    /* Telemetry */
+    .telemetry-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 0.8rem;
+    }
+    .telemetry-on { border-left: 3px solid #ef4444; }
+    .telemetry-off { border-left: 3px solid #10b981; }
+
+    /* Actions */
+    .action-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 15px;
+    }
+    .action-item.good { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+    .action-item.warning { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .action-item.critical { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .action-icon { font-size: 1.3rem; }
+    .action-subsection {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #555;
+      margin: 15px 0 10px;
+      font-weight: 700;
+    }
+    .critical-text { color: #dc2626; }
+    .action-list {
+      list-style: none;
+      padding-left: 0;
+    }
+    .action-list li {
+      padding: 8px 0 8px 24px;
+      position: relative;
+      font-size: 0.85rem;
+      color: #333;
+    }
+    .action-list li::before {
+      content: '\25B8';
+      position: absolute;
+      left: 8px;
+      color: #777;
+    }
+    .action-list code {
+      background: #f3f4f6;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.8rem;
+      color: #7c3aed;
+      border: 1px solid #e5e7eb;
+    }
+    .sev-critical { color: #dc2626; }
+    .small { font-size: 0.75rem; }
+    .empty-state {
+      text-align: center;
+      padding: 30px;
+      color: #666;
+      font-style: italic;
+    }
+    .empty-state.good { color: #059669; font-style: normal; }
+
+    /* Footer */
+    .footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #d0d0d0;
+      font-size: 0.75rem;
+      color: #555;
+      text-align: center;
+    }
+    .footer code { background: #f3f4f6; padding: 1px 4px; border-radius: 2px; }
+
+    /* Upload card accent borders */
+    .upload-card { border-left: 3px solid #e0e0e0; }
+    .upload-card.badge-red { border-left-color: #ef4444; }
+    .upload-card.badge-yellow { border-left-color: #f59e0b; }
+    .upload-card.badge-green { border-left-color: #10b981; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="report-header">
+      <h1>GROK DATA EXPOSURE REPORT</h1>
+      <div class="subtitle">Generated 2026-07-13 13:01 · grok-data-exposure-checker v3.0</div>
+    </div>
+
+    <!-- Traffic Light -->
+    <div class="traffic-light">
+      <div class="light-circle"></div>
+      <div class="light-label">RED</div>
+      <div class="light-desc">CONFIRMED upload with sensitive files in path</div>
+    </div>
+
+    <!-- System -->
+    <div class="section">
+      <div class="section-title">System</div>
+      <div class="sys-info">
+        <span>Grok home</span><span class="mono">/home/user/.grok</span>
+        <span>User home</span><span class="mono">/home/user</span>
+        <span>Platform</span><span>linux</span>
+        <span>Log entries</span><span>1125</span>
+        <span>Version</span><span><span class="badge badge-green">v0.2.99 — folder-trust fix present</span></span>
+      </div>
+    </div>
+
+    <!-- Upload Events -->
+    <div class="section">
+      <div class="section-title">Upload Events (2)</div>
+      
+        <div class="card upload-card">
+          <div class="card-header">
+            <span class="upload-num">#1</span>
+            <span class="timestamp">2026-07-08T15:23:57</span>
+            <span class="badge badge-yellow">ATTEMPTED — outcome unknown</span>
+          </div>
+          <div class="card-body">
+            <div class="detail-row"><span class="label">Phase</span><span class="value">before_codebase</span></div>
+            <div class="detail-row"><span class="label">Repo path</span><span class="value mono path">/home/user</span></div>
+            <div class="detail-row"><span class="label">Path scope</span><span class="value scope-critical">CRITICAL — ENTIRE HOME DIRECTORY targeted</span></div>
+            
+            
+            <div class="detail-row"><span class="label">Telemetry</span><span class="value bad">ENABLED</span><span class="muted">(reason: proxy)</span></div>
+          </div>
+        </div>
+        <div class="card upload-card">
+          <div class="card-header">
+            <span class="upload-num">#2</span>
+            <span class="timestamp">2026-07-08T15:25:32</span>
+            <span class="badge badge-red">CONFIRMED UPLOAD</span>
+          </div>
+          <div class="card-body">
+            <div class="detail-row"><span class="label">Phase</span><span class="value">after_codebase</span></div>
+            <div class="detail-row"><span class="label">Repo path</span><span class="value mono path">/home/user/.grok/installed-plugins/plugin-name-redacted</span></div>
+            <div class="detail-row"><span class="label">Path scope</span><span class="value good">NORMAL</span></div>
+            <div class="detail-row"><span class="label">Destination</span><span class="value mono bad">gs://grok-code-session-traces/session-id-redacted/turn_0/after_codebase.tar.gz</span></div>
+            <div class="detail-row"><span class="label">Size</span><span class="value">3.2 KB</span></div>
+            <div class="detail-row"><span class="label">Telemetry</span><span class="value bad">ENABLED</span><span class="muted">(reason: proxy)</span></div>
+          </div>
+        </div>
+    </div>
+
+    <!-- Sensitive Files -->
+    <div class="section">
+      <div class="section-title">Sensitive Files in Upload Paths (8)</div>
+      <div class="sev-legend"><span class="sev-pill" style="background:#ef4444">CRITICAL (3)</span> <span class="sev-pill" style="background:#f59e0b">HIGH (2)</span> <span class="sev-pill" style="background:#3b82f6">MEDIUM (2)</span> <span class="sev-pill" style="background:#6b7280">LOW (1)</span> </div>
+        <div class="sensitive-item sev-critical">
+          <div class="sensitive-marker" style="background:#ef4444"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Git stored credentials <span class="sev-badge" style="background:#ef4444">CRITICAL</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.git-credentials</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-critical">
+          <div class="sensitive-marker" style="background:#ef4444"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Grok auth tokens (OAuth, refresh tokens) <span class="sev-badge" style="background:#ef4444">CRITICAL</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.grok/auth.json</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-critical">
+          <div class="sensitive-marker" style="background:#ef4444"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Hermes environment file <span class="sev-badge" style="background:#ef4444">CRITICAL</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.hermes/.env</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-high">
+          <div class="sensitive-marker" style="background:#f59e0b"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Grok config (may contain API keys) <span class="sev-badge" style="background:#f59e0b">HIGH</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.grok/config.toml</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-high">
+          <div class="sensitive-marker" style="background:#f59e0b"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Hermes config <span class="sev-badge" style="background:#f59e0b">HIGH</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.hermes/config.yaml</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-medium">
+          <div class="sensitive-marker" style="background:#3b82f6"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">SSH authorized keys <span class="sev-badge" style="background:#3b82f6">MEDIUM</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.ssh/authorized_keys</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-medium">
+          <div class="sensitive-marker" style="background:#3b82f6"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">Git config (check for tokens) <span class="sev-badge" style="background:#3b82f6">MEDIUM</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.gitconfig</div>
+          </div>
+        </div>
+        <div class="sensitive-item sev-low">
+          <div class="sensitive-marker" style="background:#6b7280"></div>
+          <div class="sensitive-content">
+            <div class="sensitive-desc">SSH known hosts <span class="sev-badge" style="background:#6b7280">LOW</span> <span class="file-exists">EXISTS</span></div>
+            <div class="sensitive-path mono">/home/user/.ssh/known_hosts</div>
+          </div>
+        </div>
+    </div>
+
+    <!-- Telemetry -->
+    <div class="section">
+      <div class="section-title">Telemetry History</div>
+      
+        <div class="telemetry-row telemetry-on">
+          <span class="mono">session-redacted-14f...</span>
+          <span class="timestamp">2026-07-08</span>
+          <span class="badge badge-red">ENABLED</span>
+          <span class="muted">(reason: proxy)</span>
+        </div>
+        <div class="telemetry-row telemetry-off">
+          <span class="mono">session-redacted-f54...</span>
+          <span class="timestamp">2026-07-13</span>
+          <span class="badge badge-green">DISABLED</span>
+          
+        </div>
+    </div>
+
+    <!-- Auth -->
+    <div class="section">
+      <div class="section-title">Auth &amp; Data Retention</div>
+      <div class="card"><div class="card-body"><div class="detail-row"><span class="label">Data retention opt-out</span><span class="value bad">NOT OPTED OUT</span><span class="muted">xAI can retain your data</span></div><div class="detail-row"><span class="label">Identity</span><span class="value">User Name</span></div><div class="detail-row"><span class="label">Email</span><span class="value">user@email.com</span></div></div></div>
+    </div>
+
+    <!-- Actions -->
+    <div class="section">
+      <div class="section-title">Recommended Actions</div>
+      
+        <div class="action-item critical">
+          <span class="action-icon">⛔</span>
+          <span>Confirmed exposure — act now:</span>
+        </div>
+        <div class="action-subsection critical-text">IMMEDIATE — Do these right now:</div><ol class="action-list"><li><strong class="critical-text">Rotate ALL CRITICAL credentials:</strong><ul><li class="sev-critical">Git stored credentials<br><span class="mono small">/home/user/.git-credentials</span></li><li class="sev-critical">Grok auth tokens (OAuth, refresh tokens)<br><span class="mono small">/home/user/.grok/auth.json</span></li><li class="sev-critical">Hermes environment file<br><span class="mono small">/home/user/.hermes/.env</span></li><li class="muted">+ 5 HIGH/MEDIUM files to review</li></ul></li><li><strong>Regenerate SSH keys:</strong> <code>ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519</code></li>
+            <li><strong>Revoke and recreate API tokens</strong> stored in files</li>
+            <li>If <code>~/.hermes/</code> was included: review memories/config for secrets</li>
+          </ol>
+        <div class="action-subsection">HARDENING — Prevent recurrence:</div>
+        <ol class="action-list" start="5">
+          <li>Set <code>coding_data_retention_opt_out = true</code> in auth.json</li>
+          <li>Delete <code>~/.grok/upload_queue/</code></li>
+          <li>Only run grok inside project directories</li>
+          <li>Re-run this exposure check periodically</li>
+          <li>Contact xAI to request data deletion from:<br><code>gs://grok-code-session-traces/</code></li>
+        </ol>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <p>Data destination: <code>gs://grok-code-session-traces</code> (xAI private GCS)</p>
+      <p>Upload route: <code>cli-chat-proxy.grok.com → GCS</code></p>
+      <p>This tool checks local logs only. Server-side data may differ.</p>
+    </div>
+
+  </div>
+</body>
+</html>
