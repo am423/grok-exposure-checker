@@ -24,7 +24,15 @@ That's it. The tool generates a styled HTML report and opens it in your browser.
 
 ## What You'll See
 
-The report shows a traffic-light status:
+The report is a styled HTML page with a visual traffic-light status:
+
+![Report - Status and Upload Events](docs/screenshots/report-top.png)
+
+![Report - Sensitive Files and Telemetry](docs/screenshots/report-middle.png)
+
+![Report - Recommended Actions](docs/screenshots/report-actions.png)
+
+The traffic-light status:
 
 - **GREEN** — No upload events found. You're clear.
 - **YELLOW** — Upload was attempted but outcome is uncertain. Rotate credentials as a precaution.
