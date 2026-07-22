@@ -930,9 +930,17 @@ def main():
 
     html_content, risk, risk_desc, sensitive_files = generate_html_report(grok_home, entries, uploads, telemetry)
 
-    # Save HTML report
+    # Save HTML report. The report embeds the user's identity and a map of which
+    # sensitive credential files exist on this machine, so restrict it to the
+    # owner (0600) instead of the umask default (commonly world-readable 0644).
     report_path = grok_home / "exposure-report.html"
-    report_path.write_text(html_content, encoding="utf-8")
+    fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    try:
+        os.chmod(report_path, 0o600)  # enforce even if the file pre-existed
+    except OSError:
+        pass
 
     # Terminal summary
     print()
