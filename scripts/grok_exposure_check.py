@@ -20,6 +20,20 @@ from datetime import datetime
 from pathlib import Path
 
 
+# ── Warning collection ───────────────────────────────────────────────────────
+# Non-fatal problems (unscannable directories, unreadable side files) must not
+# vanish silently — for a security tool a swallowed error can hide real
+# exposure. Collect them here so they are printed to stderr and surfaced in
+# the report instead of being dropped.
+
+WARNINGS = []
+
+
+def warn(message):
+    WARNINGS.append(message)
+    print(f"  WARNING: {message}", file=sys.stderr)
+
+
 # ── Sensitive File Definitions ───────────────────────────────────────────────
 # Format: (relative_path, description, severity)
 # Severity: CRITICAL = credentials that allow impersonation
@@ -130,8 +144,8 @@ def check_sensitive_files(base_path):
             for prefix in GLOB_PREFIXES:
                 for found in list(base.glob(f"{prefix}{pattern}"))[:5]:
                     results.append((pattern, description, str(found), severity))
-        except (PermissionError, OSError):
-            pass
+        except (PermissionError, OSError) as e:
+            warn(f"Could not scan {base} for pattern '{pattern}': {e}")
 
     # Check SSH id_* keys
     home = Path.home()
@@ -142,8 +156,8 @@ def check_sensitive_files(base_path):
                 for key_file in ssh_dir.iterdir():
                     if key_file.is_file() and key_file.name.startswith("id_"):
                         results.append((f".ssh/{key_file.name}", f"SSH key ({key_file.name})", str(key_file), "CRITICAL"))
-            except (PermissionError, OSError):
-                pass
+            except (PermissionError, OSError) as e:
+                warn(f"Could not list SSH directory {ssh_dir}: {e}")
 
     seen = set()
     deduped = []
@@ -156,21 +170,28 @@ def check_sensitive_files(base_path):
 
 
 def parse_logs(log_file):
+    """Parse the unified JSONL log into a list of entries.
+
+    Raises OSError if the log exists but cannot be read. Callers MUST treat an
+    unreadable log as an error rather than as "no activity": silently returning
+    an empty list would make an unreadable log indistinguishable from a clean
+    one and yield a false GREEN result.
+    """
     entries = []
     if not log_file.exists():
         return entries
-    try:
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    except (PermissionError, OSError):
-        pass
+    malformed = 0
+    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                malformed += 1
+    if malformed:
+        warn(f"{malformed} malformed log line(s) skipped in {log_file}")
     return entries
 
 
@@ -277,12 +298,21 @@ def esc(text):
     return html.escape(str(text))
 
 
-def read_json_file(path):
-    """Read and parse a JSON file, returning None on missing file or parse error."""
+def read_json_file(path, warn_on_error=False):
+    """Read and parse a JSON file, returning None on missing file or parse error.
+
+    When warn_on_error is True, a file that exists but cannot be read or parsed
+    emits a warning instead of being silently swallowed (a missing file is
+    still treated as a normal, silent None).
+    """
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as e:
+        if warn_on_error:
+            warn(f"Could not read {path}: {e}")
         return None
 
 
@@ -325,16 +355,18 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
 
     # Auth data
     auth_info = {}
-    auth_data = read_json_file(grok_home / "auth.json")
-    if auth_data:
+    auth_data = read_json_file(grok_home / "auth.json", warn_on_error=True)
+    if isinstance(auth_data, dict):
         for scope, info in auth_data.items():
             auth_info = info
             break
+    elif auth_data is not None:
+        warn(f"Unexpected structure in {grok_home / 'auth.json'}; skipping auth details")
 
     # Version
     grok_version = "unknown"
-    version_data = read_json_file(grok_home / "version.json")
-    if version_data is not None:
+    version_data = read_json_file(grok_home / "version.json", warn_on_error=True)
+    if isinstance(version_data, dict):
         grok_version = version_data.get("version", "?")
 
     # ── Generate HTML ────────────────────────────────────────────────────────
@@ -562,6 +594,21 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
             version_badge = badge("Pre-0.2.90 — folder-trust fix missing", "badge-yellow")
         else:
             version_badge = badge(f"v{esc(grok_version)} — folder-trust fix present", "badge-green")
+
+    # ── Scan warnings HTML ───────────────────────────────────────────────────
+    # Surface any non-fatal problems so incomplete scans are visible rather
+    # than being silently absent from the report.
+    warnings_html = ""
+    if WARNINGS:
+        warn_items = "".join(f"<li>{esc(w)}</li>" for w in WARNINGS)
+        warnings_html = f'''
+    <div class="section">
+      <div class="section-title">Scan Warnings ({len(WARNINGS)})</div>
+      <div class="card"><div class="card-body">
+        <div class="action-item warning"><span class="action-icon">⚠</span><span>Some data could not be read — results may be incomplete.</span></div>
+        <ul class="action-list">{warn_items}</ul>
+      </div></div>
+    </div>'''
 
     # ── Assemble full HTML ───────────────────────────────────────────────────
     html_content = f"""<!DOCTYPE html>
@@ -866,6 +913,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
         <span>Version</span><span>{version_badge or esc(grok_version)}</span>
       </div>
     </div>
+{warnings_html}
 
     <!-- Upload Events -->
     <div class="section">
@@ -925,7 +973,14 @@ def main():
         print(f"  Grok may not have been used yet.\n")
         sys.exit(1)
 
-    entries = parse_logs(log_file)
+    try:
+        entries = parse_logs(log_file)
+    except OSError as e:
+        print(f"\n  ERROR: Could not read log file {log_file}: {e}")
+        print(f"  Exposure cannot be assessed without reading the log; "
+              f"an unreadable log is NOT the same as 'no exposure'.")
+        print(f"  Check file permissions and try again.\n")
+        sys.exit(1)
     uploads, telemetry = analyze_uploads(entries)
 
     html_content, risk, risk_desc, sensitive_files = generate_html_report(grok_home, entries, uploads, telemetry)
@@ -934,13 +989,18 @@ def main():
     # sensitive credential files exist on this machine, so restrict it to the
     # owner (0600) instead of the umask default (commonly world-readable 0644).
     report_path = grok_home / "exposure-report.html"
-    fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(html_content)
+    try:
+        fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(html_content)
+    except OSError as e:
+        print(f"\n  ERROR: Could not write report to {report_path}: {e}\n",
+              file=sys.stderr)
+        sys.exit(1)
     try:
         os.chmod(report_path, 0o600)  # enforce even if the file pre-existed
-    except OSError:
-        pass
+    except OSError as e:
+        warn(f"Could not restrict report permissions on {report_path}: {e}")
 
     # Terminal summary
     print()
@@ -955,15 +1015,23 @@ def main():
     if crit_count:
         print(f"  {crit_count} CRITICAL sensitive file(s) found")
 
+    if WARNINGS:
+        print(f"  {len(WARNINGS)} warning(s) reported above — "
+              f"results may be incomplete")
+
     print(f"\n  Report saved: {report_path}")
     print(f"  Open with:    xdg-open {report_path}")
     print()
 
-    # Try to open in browser
+    # Try to open in browser. A failure here is non-fatal (headless
+    # environments have no browser) but should not be silent.
     try:
-        webbrowser.open(f"file://{report_path}")
-    except Exception:
-        pass
+        opened = webbrowser.open(f"file://{report_path}")
+    except Exception as e:
+        warn(f"Could not open report in browser: {e}")
+    else:
+        if not opened:
+            warn("No browser available to open the report automatically")
 
 
 if __name__ == "__main__":
