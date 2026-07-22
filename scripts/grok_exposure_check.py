@@ -92,6 +92,21 @@ SENSITIVE_GLOBS = [
     ("*.env", "Environment file", "CRITICAL"),
 ]
 
+# Directory prefixes searched for each sensitive glob (self, one level down, dotdirs)
+GLOB_PREFIXES = ["", "*/", ".*/"]
+
+# ── Severity Model ───────────────────────────────────────────────────────────
+# Single source of truth for severity ordering and display colors.
+SEVERITY_LEVELS = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+SEVERITY_ORDER = {sev: i for i, sev in enumerate(SEVERITY_LEVELS)}
+SEVERITY_COLORS = {
+    "CRITICAL": "#ef4444",
+    "HIGH": "#f59e0b",
+    "MEDIUM": "#3b82f6",
+    "LOW": "#6b7280",
+}
+SEVERITY_FALLBACK_COLOR = "#6b7280"
+
 
 def get_grok_home():
     if os.environ.get("GROK_HOME"):
@@ -112,12 +127,9 @@ def check_sensitive_files(base_path):
 
     for pattern, description, severity in SENSITIVE_GLOBS:
         try:
-            for found in list(base.glob(pattern))[:5]:
-                results.append((pattern, description, str(found), severity))
-            for found in list(base.glob(f"*/{pattern}"))[:5]:
-                results.append((pattern, description, str(found), severity))
-            for found in list(base.glob(f".*/{pattern}"))[:5]:
-                results.append((pattern, description, str(found), severity))
+            for prefix in GLOB_PREFIXES:
+                for found in list(base.glob(f"{prefix}{pattern}"))[:5]:
+                    results.append((pattern, description, str(found), severity))
         except (PermissionError, OSError):
             pass
 
@@ -265,6 +277,35 @@ def esc(text):
     return html.escape(str(text))
 
 
+def read_json_file(path):
+    """Read and parse a JSON file, returning None on missing file or parse error."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def critical_files(sensitive_files):
+    """Return only the CRITICAL-severity entries from a sensitive-files list."""
+    return [s for s in sensitive_files if s[3] == "CRITICAL"]
+
+
+def detail_row(label, value, value_class="", extra=""):
+    """Render a labeled detail row. `value_class` adds classes to the value span;
+    `extra` is appended raw after the value span (e.g. a trailing muted note)."""
+    cls = f"value {value_class}" if value_class else "value"
+    return (
+        f'<div class="detail-row"><span class="label">{label}</span>'
+        f'<span class="{cls}">{value}</span>{extra}</div>'
+    )
+
+
+def badge(text, badge_class):
+    """Render a colored status badge span."""
+    return f'<span class="badge {badge_class}">{text}</span>'
+
+
 def generate_html_report(grok_home, entries, uploads, telemetry):
     home = Path.home()
 
@@ -280,30 +321,21 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     risk, risk_desc = assess_risk(uploads, all_sensitive)
 
     # Sort sensitive files by severity
-    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-    all_sensitive.sort(key=lambda x: sev_order.get(x[3], 4))
+    all_sensitive.sort(key=lambda x: SEVERITY_ORDER.get(x[3], len(SEVERITY_LEVELS)))
 
     # Auth data
     auth_info = {}
-    auth_file = grok_home / "auth.json"
-    if auth_file.exists():
-        try:
-            with open(auth_file) as f:
-                auth_data = json.load(f)
-            for scope, info in auth_data.items():
-                auth_info = info
-                break
-        except (json.JSONDecodeError, PermissionError):
-            pass
+    auth_data = read_json_file(grok_home / "auth.json")
+    if auth_data:
+        for scope, info in auth_data.items():
+            auth_info = info
+            break
 
     # Version
     grok_version = "unknown"
-    version_file = grok_home / "version.json"
-    if version_file.exists():
-        try:
-            grok_version = json.loads(version_file.read_text()).get("version", "?")
-        except (json.JSONDecodeError, PermissionError):
-            pass
+    version_data = read_json_file(grok_home / "version.json")
+    if version_data is not None:
+        grok_version = version_data.get("version", "?")
 
     # ── Generate HTML ────────────────────────────────────────────────────────
 
@@ -314,15 +346,8 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     }
     rc = risk_colors[risk]
 
-    sev_badge_colors = {
-        "CRITICAL": "#ef4444",
-        "HIGH": "#f59e0b",
-        "MEDIUM": "#3b82f6",
-        "LOW": "#6b7280",
-    }
-
     # Count severities
-    sev_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    sev_counts = {sev: 0 for sev in SEVERITY_LEVELS}
     for _, _, _, sev in all_sensitive:
         sev_counts[sev] = sev_counts.get(sev, 0) + 1
 
@@ -355,11 +380,11 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
 
             gcs_html = ""
             if u.get("gcs_path") and status == "confirmed":
-                gcs_html = f'<div class="detail-row"><span class="label">Destination</span><span class="value mono bad">gs://grok-code-session-traces/{esc(u["gcs_path"])}</span></div>'
+                gcs_html = detail_row("Destination", f'gs://grok-code-session-traces/{esc(u["gcs_path"])}', "mono bad")
 
             size_html = ""
             if u.get("size_bytes") is not None:
-                size_html = f'<div class="detail-row"><span class="label">Size</span><span class="value">{fmt_bytes(u["size_bytes"])}</span></div>'
+                size_html = detail_row("Size", fmt_bytes(u["size_bytes"]))
 
             # Telemetry
             session_t = [t for t in telemetry if t["session_id"] == u["session_id"]]
@@ -367,22 +392,25 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
             if session_t:
                 st = session_t[0]
                 if st["uploads_enabled"]:
-                    telem_html = f'<div class="detail-row"><span class="label">Telemetry</span><span class="value bad">ENABLED</span><span class="muted">(reason: {esc(st.get("upload_reason","?"))})</span></div>'
+                    telem_html = detail_row("Telemetry", "ENABLED", "bad", f'<span class="muted">(reason: {esc(st.get("upload_reason","?"))})</span>')
                 else:
-                    telem_html = f'<div class="detail-row"><span class="label">Telemetry</span><span class="value good">DISABLED</span></div>'
+                    telem_html = detail_row("Telemetry", "DISABLED", "good")
 
-            scope_html = f'<div class="detail-row"><span class="label">Path scope</span><span class="value {scope_class}">{scope}{" — " + esc(scope_desc) if scope_desc else ""}</span></div>' if scope_desc else f'<div class="detail-row"><span class="label">Path scope</span><span class="value good">{scope}</span></div>'
+            if scope_desc:
+                scope_html = detail_row("Path scope", f"{scope} — {esc(scope_desc)}", scope_class)
+            else:
+                scope_html = detail_row("Path scope", scope, "good")
 
             upload_cards += f'''
         <div class="card upload-card">
           <div class="card-header">
             <span class="upload-num">#{i}</span>
             <span class="timestamp">{esc(u["timestamp"][:19])}</span>
-            <span class="badge {badge_class}">{badge_text}</span>
+            {badge(badge_text, badge_class)}
           </div>
           <div class="card-body">
-            <div class="detail-row"><span class="label">Phase</span><span class="value">{esc(u["phase"])}</span></div>
-            <div class="detail-row"><span class="label">Repo path</span><span class="value mono path">{esc(u["repo_path"])}</span></div>
+            {detail_row("Phase", esc(u["phase"]))}
+            {detail_row("Repo path", esc(u["repo_path"]), "mono path")}
             {scope_html}
             {gcs_html}
             {size_html}
@@ -396,16 +424,16 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
         sensitive_html = '<div class="empty-state">No upload paths to scan</div>'
     elif all_sensitive:
         sev_legend = ""
-        for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+        for sev in SEVERITY_LEVELS:
             count = sev_counts.get(sev, 0)
             if count:
-                color = sev_badge_colors[sev]
+                color = SEVERITY_COLORS[sev]
                 sev_legend += f'<span class="sev-pill" style="background:{color}">{sev} ({count})</span> '
 
         sensitive_html = f'<div class="sev-legend">{sev_legend}</div>'
 
         for _, desc, path, severity in all_sensitive:
-            color = sev_badge_colors.get(severity, "#6b7280")
+            color = SEVERITY_COLORS.get(severity, SEVERITY_FALLBACK_COLOR)
             file_exists = Path(path).exists()
             exists_badge = '<span class="file-exists">EXISTS</span>' if file_exists else '<span class="file-gone">removed</span>'
             sensitive_html += f'''
@@ -437,7 +465,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
         <div class="telemetry-row {status_class}">
           <span class="mono">{esc(sid[:12])}...</span>
           <span class="timestamp">{esc(t["timestamp"][:10])}</span>
-          <span class="badge {'badge-red' if enabled else 'badge-green'}">{status_text}</span>
+          {badge(status_text, 'badge-red' if enabled else 'badge-green')}
           {reason_html}
         </div>'''
 
@@ -446,17 +474,17 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     if auth_info:
         opt_out = auth_info.get("coding_data_retention_opt_out")
         if opt_out is False:
-            auth_html += '<div class="detail-row"><span class="label">Data retention opt-out</span><span class="value bad">NOT OPTED OUT</span><span class="muted">xAI can retain your data</span></div>'
+            auth_html += detail_row("Data retention opt-out", "NOT OPTED OUT", "bad", '<span class="muted">xAI can retain your data</span>')
         elif opt_out is True:
-            auth_html += '<div class="detail-row"><span class="label">Data retention opt-out</span><span class="value good">OPTED OUT</span></div>'
+            auth_html += detail_row("Data retention opt-out", "OPTED OUT", "good")
         else:
-            auth_html += '<div class="detail-row"><span class="label">Data retention opt-out</span><span class="value">UNKNOWN</span></div>'
+            auth_html += detail_row("Data retention opt-out", "UNKNOWN")
 
         name = f"{auth_info.get('first_name','')} {auth_info.get('last_name','')}".strip()
         if name:
-            auth_html += f'<div class="detail-row"><span class="label">Identity</span><span class="value">{esc(name)}</span></div>'
+            auth_html += detail_row("Identity", esc(name))
         if auth_info.get("email"):
-            auth_html += f'<div class="detail-row"><span class="label">Email</span><span class="value">{esc(auth_info["email"])}</span></div>'
+            auth_html += detail_row("Email", esc(auth_info["email"]))
 
     # ── Actions HTML ─────────────────────────────────────────────────────────
     actions_html = ""
@@ -479,7 +507,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
           <span>Possible exposure — take action:</span>
         </div>"""
         if all_sensitive:
-            crit_files = [s for s in all_sensitive if s[3] == "CRITICAL"]
+            crit_files = critical_files(all_sensitive)
             if crit_files:
                 actions_html += '<div class="action-subsection">IMMEDIATE — Rotate these credentials:</div><ul class="action-list">'
                 for _, desc, path, sev in crit_files[:6]:
@@ -503,7 +531,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
           <span>Confirmed exposure — act now:</span>
         </div>
         <div class="action-subsection critical-text">IMMEDIATE — Do these right now:</div>"""
-        crit_files = [s for s in all_sensitive if s[3] == "CRITICAL"]
+        crit_files = critical_files(all_sensitive)
         if crit_files:
             actions_html += '<ol class="action-list">'
             actions_html += '<li><strong class="critical-text">Rotate ALL CRITICAL credentials:</strong><ul>'
@@ -531,9 +559,9 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     version_badge = ""
     if grok_version != "unknown":
         if grok_version < "0.2.90":
-            version_badge = '<span class="badge badge-yellow">Pre-0.2.90 — folder-trust fix missing</span>'
+            version_badge = badge("Pre-0.2.90 — folder-trust fix missing", "badge-yellow")
         else:
-            version_badge = f'<span class="badge badge-green">v{esc(grok_version)} — folder-trust fix present</span>'
+            version_badge = badge(f"v{esc(grok_version)} — folder-trust fix present", "badge-green")
 
     # ── Assemble full HTML ───────────────────────────────────────────────────
     html_content = f"""<!DOCTYPE html>
