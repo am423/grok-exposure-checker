@@ -11,6 +11,7 @@ findings, and actionable recommendations.
 Output: ~/.grok/exposure-report.html (and terminal summary)
 """
 
+import argparse
 import json
 import os
 import sys
@@ -109,6 +110,26 @@ SENSITIVE_GLOBS = [
 # Directory prefixes searched for each sensitive glob (self, one level down, dotdirs)
 GLOB_PREFIXES = ["", "*/", ".*/"]
 
+# Project-level secret basenames worth flagging at any depth in an uploaded tree.
+PROJECT_SECRET_NAMES = {
+    ".env": ("Environment file (likely secrets)", "CRITICAL"),
+    ".env.local": ("Environment file (local)", "CRITICAL"),
+    ".env.production": ("Environment file (production)", "CRITICAL"),
+    ".env.staging": ("Environment file (staging)", "HIGH"),
+    "secrets.json": ("Secrets file", "CRITICAL"),
+    "credentials.json": ("Credentials file", "CRITICAL"),
+    "service-account-key.json": ("GCP service account key", "CRITICAL"),
+}
+
+# Directories skipped by the recursive scan: VCS internals, dependency and
+# language-runtime caches, and test fixtures. Without this, scanning a large
+# tree (e.g. a home dir) surfaces hundreds of runtime test certs as noise.
+WALK_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache",
+    ".pyenv", ".rbenv", ".nvm", ".cache", ".cargo", ".rustup", ".gradle",
+    "site-packages", "dist-packages", ".tox", ".pytest_cache", ".git-crypt",
+}
+
 # ── Severity Model ───────────────────────────────────────────────────────────
 # Single source of truth for severity ordering and display colors.
 SEVERITY_LEVELS = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
@@ -128,36 +149,146 @@ def get_grok_home():
     return Path.home() / ".grok"
 
 
+def parse_version(v):
+    """Parse a dotted version string into a comparable int tuple.
+
+    Returns None when the value cannot be parsed numerically, so callers can
+    avoid the pitfalls of lexicographic string comparison (e.g. "0.2.100"
+    sorting before "0.2.90").
+    """
+    parts = []
+    for chunk in str(v).split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if digits == "":
+            return None
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def open_command():
+    """Platform-appropriate command to open a file, for the terminal hint."""
+    if sys.platform == "darwin":
+        return "open"
+    if sys.platform.startswith("win"):
+        return "start"
+    return "xdg-open"
+
+
+def _home_within(base):
+    """Return True if the real home directory is `base` or lives inside it."""
+    try:
+        home = Path.home().resolve()
+        base_r = Path(base).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return base_r == home or base_r in home.parents
+
+
+def _same_dir(a, b):
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _scan_known_root(root, is_home):
+    """Check a directory for the fixed home-relative sensitive files.
+
+    Dynamic ``id_*`` SSH keys are only enumerated when the directory is the
+    real home directory (they are named per-user and only meaningful there).
+    """
+    results = []
+    for rel_path, description, severity in SENSITIVE_FILES:
+        candidate = root / rel_path
+        try:
+            if candidate.exists():
+                results.append((rel_path, description, str(candidate), severity))
+        except OSError:
+            continue
+
+    if is_home:
+        ssh_dir = root / ".ssh"
+        try:
+            if ssh_dir.is_dir():
+                for key_file in ssh_dir.iterdir():
+                    if (key_file.is_file() and key_file.name.startswith("id_")
+                            and not key_file.name.endswith(".pub")):
+                        results.append(
+                            (f".ssh/{key_file.name}", f"SSH key ({key_file.name})",
+                             str(key_file), "CRITICAL"))
+        except (PermissionError, OSError) as e:
+            warn(f"Could not list SSH directory {ssh_dir}: {e}")
+    return results
+
+
+def _walk_project_secrets(base, max_dirs=20000, max_depth=8, max_hits=500):
+    """Bounded recursive scan for project-level secrets (env files, keys, certs).
+
+    Grok walks the entire uploaded tree, so these can live at any depth. The
+    walk is bounded (directory count, depth, and hit count) to preserve the
+    tool's speed and avoid pathological trees, and skips VCS/runtime/cache
+    directories that would otherwise flood the report with test fixtures.
+    """
+    results = []
+    base = Path(base)
+    try:
+        base_depth = len(base.resolve().parts)
+    except (OSError, ValueError, RuntimeError):
+        base_depth = len(base.parts)
+    scanned = 0
+
+    def _on_error(e):
+        warn(f"Could not scan {getattr(e, 'filename', base)}: {e}")
+
+    for root, dirs, files in os.walk(base, onerror=_on_error):
+        scanned += 1
+        if scanned > max_dirs or len(results) >= max_hits:
+            break
+        dirs[:] = [d for d in dirs if d not in WALK_SKIP_DIRS]
+        try:
+            depth = len(Path(root).resolve().parts) - base_depth
+        except (OSError, ValueError, RuntimeError):
+            depth = 0
+        if depth >= max_depth:
+            dirs[:] = []
+        for fname in files:
+            full = Path(root) / fname
+            if fname in PROJECT_SECRET_NAMES:
+                desc, sev = PROJECT_SECRET_NAMES[fname]
+                results.append((fname, desc, str(full), sev))
+                continue
+            for pattern, pdesc, psev in SENSITIVE_GLOBS:
+                if full.match(pattern):
+                    results.append((pattern, pdesc, str(full), psev))
+                    break
+    return results
+
+
 def check_sensitive_files(base_path):
     results = []
     base = Path(base_path)
-    if not base.exists() or not base.is_dir():
+    try:
+        if not base.exists() or not base.is_dir():
+            return results
+    except OSError:
         return results
 
-    for rel_path, description, severity in SENSITIVE_FILES:
-        candidate = base / rel_path
-        if candidate.exists():
-            results.append((rel_path, description, str(candidate), severity))
-
-    for pattern, description, severity in SENSITIVE_GLOBS:
-        try:
-            for prefix in GLOB_PREFIXES:
-                for found in list(base.glob(f"{prefix}{pattern}"))[:5]:
-                    results.append((pattern, description, str(found), severity))
-        except (PermissionError, OSError) as e:
-            warn(f"Could not scan {base} for pattern '{pattern}': {e}")
-
-    # Check SSH id_* keys
     home = Path.home()
-    if base.resolve() == home.resolve():
-        ssh_dir = base / ".ssh"
-        if ssh_dir.is_dir():
-            try:
-                for key_file in ssh_dir.iterdir():
-                    if key_file.is_file() and key_file.name.startswith("id_"):
-                        results.append((f".ssh/{key_file.name}", f"SSH key ({key_file.name})", str(key_file), "CRITICAL"))
-            except (PermissionError, OSError) as e:
-                warn(f"Could not list SSH directory {ssh_dir}: {e}")
+    roots = [(base, _same_dir(base, home))]
+    # When the real home lives inside the uploaded tree, Grok would upload the
+    # home-relative credential files too — scan them against the actual home.
+    if _home_within(base) and not _same_dir(base, home):
+        roots.append((home, True))
+
+    for root, is_home in roots:
+        results.extend(_scan_known_root(root, is_home))
+
+    results.extend(_walk_project_secrets(base))
 
     seen = set()
     deduped = []
@@ -215,15 +346,28 @@ def analyze_uploads(entries):
             })
 
         elif "repo_state.upload.enqueued" in msg:
-            gcs = ctx.get("gcs_path", "")
+            gcs = ctx.get("gcs_path", "") or ""
             phase = "before_codebase" if "before_codebase" in gcs else \
                     "after_codebase" if "after_codebase" in gcs else "unknown"
+
+            # Prefer a same-session started upload with a matching phase, then
+            # fall back to any pending started upload in the session (phase is
+            # only inferred from the GCS path and may not always be present).
+            match = None
             for u in reversed(uploads):
-                if u["session_id"] == sid and u["phase"] == phase and u["status"] == "started":
-                    u["status"] = "confirmed"
-                    u["gcs_path"] = gcs
-                    u["size_bytes"] = ctx.get("size_bytes")
+                if u["session_id"] == sid and u["status"] == "started" and u["phase"] == phase:
+                    match = u
                     break
+            if match is None:
+                for u in reversed(uploads):
+                    if u["session_id"] == sid and u["status"] == "started":
+                        match = u
+                        break
+
+            if match is not None:
+                match["status"] = "confirmed"
+                match["gcs_path"] = gcs
+                match["size_bytes"] = ctx.get("size_bytes")
             else:
                 uploads.append({
                     "timestamp": ts, "session_id": sid, "phase": phase,
@@ -250,16 +394,43 @@ def analyze_uploads(entries):
 
 
 def assess_path_scope(repo_path):
-    path_str = str(repo_path).lower().replace("\\", "/")
-    home_str = str(Path.home()).lower().replace("\\", "/")
+    if repo_path is None:
+        return "UNKNOWN", "Upload path not recorded in logs"
+    raw = str(repo_path).strip()
+    if raw.lower() == "unknown":
+        return "UNKNOWN", "Upload path not recorded in logs"
 
-    if path_str.rstrip("/") == home_str.rstrip("/"):
+    norm = raw.replace("\\", "/").rstrip("/")
+    norm_l = norm.lower()
+    home_l = str(Path.home()).replace("\\", "/").rstrip("/").lower()
+
+    if norm_l == home_l:
         return "CRITICAL", "ENTIRE HOME DIRECTORY targeted"
-    if path_str in ("/", "c:/", "c:\\", ""):
+    if norm in ("", "/") or norm_l in ("c:", "c:/"):
         return "CRITICAL", "ROOT FILESYSTEM targeted"
-    if home_str.startswith(path_str.rstrip("/")) and path_str.count("/") <= 4:
+
+    try:
+        home_parents = {
+            str(p).replace("\\", "/").rstrip("/").lower()
+            for p in Path.home().parents
+        }
+    except (OSError, ValueError, RuntimeError):
+        home_parents = set()
+    if norm_l in home_parents:
         return "CRITICAL", "Parent of home directory targeted"
-    if not Path(repo_path).joinpath(".git").exists():
+
+    p = Path(repo_path)
+    try:
+        exists = p.exists()
+    except OSError:
+        exists = False
+    if not exists:
+        return "UNKNOWN", "Path not present on this machine — scope unverifiable"
+    try:
+        is_git = p.joinpath(".git").exists()
+    except OSError:
+        is_git = False
+    if not is_git:
         return "ELEVATED", "NOT a git repo — Grok walks entire tree"
     return "NORMAL", None
 
@@ -287,6 +458,10 @@ def assess_risk(uploads, sensitive_files):
 
 def fmt_bytes(n):
     if n is None: return "unknown"
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "unknown"
     for unit in ["B","KB","MB","GB"]:
         if n < 1024: return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
@@ -357,9 +532,10 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     auth_info = {}
     auth_data = read_json_file(grok_home / "auth.json", warn_on_error=True)
     if isinstance(auth_data, dict):
-        for scope, info in auth_data.items():
-            auth_info = info
-            break
+        for _scope, info in auth_data.items():
+            if isinstance(info, dict):
+                auth_info = info
+                break
     elif auth_data is not None:
         warn(f"Unexpected structure in {grok_home / 'auth.json'}; skipping auth details")
 
@@ -408,7 +584,8 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
                 badge_text = status.upper()
 
             scope_class = "scope-critical" if scope == "CRITICAL" else \
-                          "scope-elevated" if scope == "ELEVATED" else "scope-normal"
+                          "scope-elevated" if scope == "ELEVATED" else \
+                          "scope-unknown" if scope == "UNKNOWN" else "scope-normal"
 
             gcs_html = ""
             if u.get("gcs_path") and status == "confirmed":
@@ -437,7 +614,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
         <div class="card upload-card">
           <div class="card-header">
             <span class="upload-num">#{i}</span>
-            <span class="timestamp">{esc(u["timestamp"][:19])}</span>
+            <span class="timestamp">{esc(str(u["timestamp"])[:19])}</span>
             {badge(badge_text, badge_class)}
           </div>
           <div class="card-body">
@@ -495,8 +672,8 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
             reason_html = f'<span class="muted">(reason: {esc(t.get("upload_reason","?"))})</span>' if enabled else ""
             telemetry_html += f'''
         <div class="telemetry-row {status_class}">
-          <span class="mono">{esc(sid[:12])}...</span>
-          <span class="timestamp">{esc(t["timestamp"][:10])}</span>
+          <span class="mono">{esc(str(sid)[:12])}...</span>
+          <span class="timestamp">{esc(str(t["timestamp"])[:10])}</span>
           {badge(status_text, 'badge-red' if enabled else 'badge-green')}
           {reason_html}
         </div>'''
@@ -590,7 +767,10 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     # ── Version badge ────────────────────────────────────────────────────────
     version_badge = ""
     if grok_version != "unknown":
-        if grok_version < "0.2.90":
+        parsed = parse_version(grok_version)
+        if parsed is None:
+            version_badge = badge(f"v{esc(grok_version)} — version unrecognized", "badge-yellow")
+        elif parsed < (0, 2, 90):
             version_badge = badge("Pre-0.2.90 — folder-trust fix missing", "badge-yellow")
         else:
             version_badge = badge(f"v{esc(grok_version)} — folder-trust fix present", "badge-green")
@@ -609,6 +789,12 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
         <ul class="action-list">{warn_items}</ul>
       </div></div>
     </div>'''
+
+    # ── PII disclosure note ──────────────────────────────────────────────────
+    pii_note = ""
+    if auth_info.get("email") or auth_info.get("first_name") or auth_info.get("last_name"):
+        pii_note = ('<p>This report may include identifying details from '
+                    '<code>auth.json</code> (name/email) — review before sharing.</p>')
 
     # ── Assemble full HTML ───────────────────────────────────────────────────
     html_content = f"""<!DOCTYPE html>
@@ -737,6 +923,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     .scope-critical {{ color: #dc2626; font-weight: 700; }}
     .scope-elevated {{ color: #d97706; }}
     .scope-normal {{ color: #059669; }}
+    .scope-unknown {{ color: #6b7280; }}
 
     /* Value modifiers */
     .bad {{ color: #dc2626; }}
@@ -950,6 +1137,7 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
       <p>Data destination: <code>gs://grok-code-session-traces</code> (xAI private GCS)</p>
       <p>Upload route: <code>cli-chat-proxy.grok.com → GCS</code></p>
       <p>This tool checks local logs only. Server-side data may differ.</p>
+      {pii_note}
     </div>
 
   </div>
@@ -959,7 +1147,16 @@ def generate_html_report(grok_home, entries, uploads, telemetry):
     return html_content, risk, risk_desc, all_sensitive
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Check whether the Grok Build CLI uploaded your data to xAI.")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Do not auto-open the report in a browser.")
+    parser.add_argument("-o", "--output", type=Path, default=None,
+                        help="Where to write the HTML report "
+                             "(default: <grok_home>/exposure-report.html).")
+    args = parser.parse_args([] if argv is None else argv)
+
     grok_home = get_grok_home()
 
     if not grok_home.exists():
@@ -988,7 +1185,17 @@ def main():
     # Save HTML report. The report embeds the user's identity and a map of which
     # sensitive credential files exist on this machine, so restrict it to the
     # owner (0600) instead of the umask default (commonly world-readable 0644).
-    report_path = grok_home / "exposure-report.html"
+    report_path = (
+        args.output
+        if args.output is not None
+        else grok_home / "exposure-report.html"
+    )
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"\n  ERROR: Could not create output directory for {report_path}: {e}\n",
+              file=sys.stderr)
+        sys.exit(1)
     try:
         fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1020,19 +1227,20 @@ def main():
               f"results may be incomplete")
 
     print(f"\n  Report saved: {report_path}")
-    print(f"  Open with:    xdg-open {report_path}")
+    print(f"  Open with:    {open_command()} {report_path}")
     print()
 
     # Try to open in browser. A failure here is non-fatal (headless
     # environments have no browser) but should not be silent.
-    try:
-        opened = webbrowser.open(f"file://{report_path}")
-    except Exception as e:
-        warn(f"Could not open report in browser: {e}")
-    else:
-        if not opened:
-            warn("No browser available to open the report automatically")
+    if not args.no_browser:
+        try:
+            opened = webbrowser.open(report_path.resolve().as_uri())
+        except Exception as e:
+            warn(f"Could not open report in browser: {e}")
+        else:
+            if not opened:
+                warn("No browser available to open the report automatically")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
