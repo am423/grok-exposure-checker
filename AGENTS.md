@@ -15,6 +15,8 @@ python3 scripts/grok_exposure_check.py
 
 The script generates `~/.grok/exposure-report.html`, auto-opens it in the default browser, and prints a brief summary to the terminal.
 
+Flags: `--no-browser` (skip auto-open, useful when headless) and `-o/--output PATH` (write the report elsewhere).
+
 ## Output
 
 - **HTML report**: `~/.grok/exposure-report.html` — styled, shareable
@@ -132,19 +134,20 @@ The script auto-detects the platform. On Windows, it may need to be run with `py
 ## Privacy Guarantees
 
 This tool:
-- Reads ONLY under `~/.grok/` and checks file existence at known paths
+- Reads ONLY Grok's own metadata files under `~/.grok/` (logs, `auth.json`, `version.json`) to reconstruct what happened
+- For all other files (SSH keys, credentials, `.env`, etc.) it checks existence only and never reads their contents
 - Does NOT transmit any data over the network
-- Does NOT read file contents (only checks existence)
 - Does NOT modify any files
 - Generates the HTML report locally
+- May surface the name/email from `auth.json` in the report; the footer flags this so users review before sharing
 
 ## Common Issues
 
 1. **"Grok installation not found"** — Set `GROK_HOME` to the correct path
 2. **"No log file found"** — Grok hasn't been used yet on this machine
 3. **Report doesn't open in browser** — File is still at the printed path, open manually
-4. **Script times out** — Should not happen (uses direct file checks, not recursive globs)
+4. **Script times out** — Should not happen. Known files are checked directly; the recursive scan for project-level secrets is bounded by depth and file count.
 
 ## Version
 
-2.0 — July 2026
+3.0 — July 2026

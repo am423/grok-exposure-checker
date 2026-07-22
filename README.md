@@ -20,6 +20,13 @@ python3 scripts/grok_exposure_check.py
 
 That's it. The tool generates a styled HTML report and opens it in your browser.
 
+**Options:**
+
+```bash
+python3 scripts/grok_exposure_check.py --no-browser        # do not auto-open the report
+python3 scripts/grok_exposure_check.py -o /path/report.html # write the report elsewhere
+```
+
 **Requirements:** Python 3.8+. No pip installs. No dependencies. No network access.
 
 ## What You'll See
@@ -93,10 +100,13 @@ When you ask an agent "check if Grok exposed my data," it should run the script 
 ## Privacy
 
 This tool:
-- Reads files only under `~/.grok/` and checks file existence at known paths
+- Reads only Grok's own metadata files under `~/.grok/` — the logs (`logs/unified.jsonl`), `auth.json`, and `version.json` — to determine what happened
+- For everything else (SSH keys, cloud credentials, `.env` files, etc.) it checks **existence only** and never opens or reads their contents
 - Does NOT transmit any data over the network
-- Does NOT read file contents (only checks if files exist)
 - Does NOT modify any files
+- Generates the HTML report locally
+
+**Note:** if `~/.grok/auth.json` contains your name/email, they appear in the report so you can confirm the affected identity. The report footer flags this — review before sharing the HTML.
 
 ## Limitations
 
@@ -104,6 +114,7 @@ This tool:
 - Cannot determine with certainty if a `before_codebase` upload completed when no `.enqueued` event exists
 - Cannot delete data from xAI's servers
 - Sensitive file detection uses known patterns; novel file names may be missed
+- The recursive scan for project-level secrets is bounded (depth and file count) for speed, so secrets in very deep or very large trees may be missed
 
 ## Background
 
