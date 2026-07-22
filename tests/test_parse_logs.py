@@ -1,7 +1,8 @@
 """Unit tests for parse_logs."""
 
 import json
-from pathlib import Path
+
+import pytest
 
 
 def _write_lines(path, lines):
@@ -48,7 +49,10 @@ class TestParseLogs:
         log.write_text("", encoding="utf-8")
         assert gec.parse_logs(log) == []
 
-    def test_permission_error_returns_empty(self, gec, tmp_path, monkeypatch):
+    def test_unreadable_log_raises(self, gec, tmp_path, monkeypatch):
+        # A log that exists but cannot be read MUST NOT be silently treated as
+        # "no activity" — that would yield a false GREEN. parse_logs surfaces
+        # the error so main() can fail loudly instead.
         log = tmp_path / "unified.jsonl"
         log.write_text(json.dumps({"msg": "x"}), encoding="utf-8")
 
@@ -56,4 +60,5 @@ class TestParseLogs:
             raise PermissionError("nope")
 
         monkeypatch.setattr("builtins.open", boom)
-        assert gec.parse_logs(log) == []
+        with pytest.raises(OSError):
+            gec.parse_logs(log)
